@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#171717">
+<title>The Chess Paradox — Chess Stream Studio</title>
+<style>
+:root{color-scheme:dark;--gold:#d7a45b;--bg:#111}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,Arial,sans-serif}
+header{padding:12px 14px;background:#1c1c1c;display:flex;align-items:center;justify-content:space-between;gap:8px}
+header strong{font-size:15px;letter-spacing:.4px} header small{color:#bbb;font-size:11px}
+main{max-width:760px;margin:auto;padding:10px}
+#stage{width:100%;background:#191919;border:1px solid #383838;border-radius:12px;overflow:hidden}
+#preview{display:block;width:100%;height:auto;touch-action:manipulation}
+.controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+button,select{font:inherit;border:0;border-radius:10px;padding:12px 9px;background:#2b2b2b;color:#fff;min-height:44px}
+button.primary{background:#b7792d;color:#fff;font-weight:700}
+button:disabled{opacity:.45}
+.status{font-size:12px;color:#cfcfcf;line-height:1.45;margin:10px 2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.row button{flex:1}
+input[type=range]{width:100%}
+#camera{display:none}
+.notice{font-size:12px;color:#c9c9c9;background:#202020;border-radius:10px;padding:10px;margin-top:10px;line-height:1.5}
+</style>
+</head>
+<body>
+<header><div><strong>THE CHESS PARADOX</strong><br><small>Chess Stream Studio · Mobile MVP</small></div><small>BOARD + FACE + VOICE</small></header>
+<main>
+  <div id="stage"><canvas id="preview" width="720" height="1280"></canvas></div>
+  <video id="camera" autoplay playsinline muted></video>
+  <div class="controls">
+    <button class="primary" id="cameraBtn">1. Start camera</button>
+    <button id="micBtn">2. Enable microphone</button>
+    <button class="primary" id="recordBtn" disabled>● Start recording</button>
+    <button id="stopBtn" disabled>■ Stop & save video</button>
+    <button id="flipBtn">Flip board</button>
+    <button id="resetBtn">Reset position</button>
+  </div>
+  <div class="row">
+    <button id="undoBtn">Undo move</button>
+    <button id="arrowBtn">Arrow mode: off</button>
+  </div>
+  <div class="status" id="status">Tap “Start camera”, allow camera access, then enable microphone. Tap a piece and then its destination square.</div>
+  <div class="notice"><b>Important:</b> Open this page using an HTTPS hosting link (or a secure localhost environment) for camera access. This is a starter web app: it records the chessboard and face camera together inside this page. It does not capture other apps or directly stream to YouTube. Android browser support for video recording can vary.</div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script>
+(() => {
+ const canvas=document.getElementById('preview'), ctx=canvas.getContext('2d');
+ const video=document.getElementById('camera');
+ const status=document.getElementById('status');
+ const cameraBtn=document.getElementById('cameraBtn'), micBtn=document.getElementById('micBtn');
+ const recordBtn=document.getElementById('recordBtn'), stopBtn=document.getElementById('stopBtn');
+ const chess=(window.Chess)?new Chess():null;
+ const files='abcdefgh';
+ const glyph={wk:'♔',wq:'♕',wr:'♖',wb:'♗',wn:'♘',wp:'♙',bk:'♚',bq:'♛',br:'♜',bb:'♝',bn:'♞',bp:'♟'};
+ let cameraStream=null,micStream=null,recorder=null,chunks=[],flipped=false,selected=null,arrowMode=false,arrowStart=null,arrows=[];
+ let lastMove=null;
+ function boardArray(){return chess?chess.board():[]}
+ function draw(){
+   const W=canvas.width,H=canvas.height; ctx.fillStyle='#151515';ctx.fillRect(0,0,W,H);
+   ctx.fillStyle='#e8e0d3';ctx.font='bold 29px system-ui';ctx.textAlign='left';ctx.fillText('THE CHESS PARADOX',28,45);
+   ctx.fillStyle='#d4a15a';ctx.font='17px system-ui';ctx.fillText('CHESS CLASS • ANALYSIS & TRAINING',28,73);
+   const size=664, x0=28,y0=100,sq=size/8;
+   // board frame
+   ctx.fillStyle='#3a2418';ctx.fillRect(x0-7,y0-7,size+14,size+14);
+   const board=boardArray();
+   for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+     const rr=flipped?7-r:r, cc=flipped?7-c:c;
+     const light=(rr+cc)%2===0;
+     const x=x0+c*sq,y=y0+r*sq;
+     ctx.fillStyle=light?'#f0d9b5':'#b77948';ctx.fillRect(x,y,sq,sq);
+     if(selected && selected.r===rr && selected.c===cc){ctx.fillStyle='rgba(255,220,40,.55)';ctx.fillRect(x,y,sq,sq)}
+     if(lastMove && ((lastMove.from===files[cc]+(8-rr))||(lastMove.to===files[cc]+(8-rr)))){ctx.fillStyle='rgba(70,200,100,.25)';ctx.fillRect(x,y,sq,sq)}
+     if(board[rr]&&board[rr][cc]){
+       const p=board[rr][cc], key=p.color+(p.type==='k'?'k':p.type==='q'?'q':p.type==='r'?'r':p.type==='b'?'b':p.type==='n'?'n':'p');
+       ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=`${sq*.76}px "DejaVu Sans", "Noto Sans Symbols 2", serif`;
+       ctx.lineWidth=1.2;ctx.strokeStyle=p.color==='w'?'#4b3527':'#f4dfbf';
+       ctx.fillStyle=p.color==='w'?'#fff8e9':'#242020';
+       ctx.strokeText(glyph[key],x+sq/2,y+sq/2+2);ctx.fillText(glyph[key],x+sq/2,y+sq/2+2);
+     }
+     ctx.fillStyle=light?'#5d4533':'#f8e5c8';ctx.font='12px system-ui';
+     if(c===0)ctx.fillText(String(8-rr),x+4,y+13);
+     if(r===7)ctx.fillText(files[cc],x+sq-14,y+sq-4);
+   }
+   // legal move hints
+   if(selected && chess){
+     const sqName=files[selected.c]+(8-selected.r);
+     try{chess.moves({square:sqName,verbose:true}).forEach(m=>{let f=files.indexOf(m.to[0]),r=8-Number(m.to[1]);ctx.beginPath();ctx.fillStyle='rgba(25,25,25,.35)';ctx.arc(x0+(flipped?7-f:f)*sq+sq/2,y0+(flipped?7-r:r)*sq+sq/2,9,0,Math.PI*2);ctx.fill()})}catch(e){}
+   }
+   arrows.forEach(a=>drawArrow(a.from,a.to,x0,y0,sq));
+   // face panel
+   const fy=790, fh=440;ctx.fillStyle='#2a241f';ctx.fillRect(0,fy,W,fh);
+   ctx.fillStyle='#d7b99b';ctx.fillRect(18,fy+18,W-36,fh-36);
+   if(video.readyState>=2 && video.videoWidth){
+     const px=18,py=fy+18,pw=W-36,ph=fh-36,vr=video.videoWidth/video.videoHeight,pr=pw/ph;
+     let sw,sh,sx,sy;
+     if(vr>pr){sh=video.videoHeight;sw=sh*pr;sx=(video.videoWidth-sw)/2;sy=0}
+     else{sw=video.videoWidth;sh=sw/pr;sx=0;sy=(video.videoHeight-sh)/2}
+     ctx.save();ctx.beginPath();ctx.rect(px,py,pw,ph);ctx.clip();ctx.translate(px+pw,py);ctx.scale(-1,1);ctx.drawImage(video,sx,sy,sw,sh,0,0,pw,ph);ctx.restore();
+   } else {
+     ctx.fillStyle='#3c3028';ctx.fillRect(18,fy+18,W-36,fh-36);
+     ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='28px system-ui';ctx.fillText('YOUR CAMERA PREVIEW',W/2,fy+210);
+     ctx.font='17px system-ui';ctx.fillStyle='#d8c6b5';ctx.fillText('Tap “Start camera” to begin',W/2,fy+246);
+   }
+   // label strip
+   ctx.fillStyle='rgba(0,0,0,.72)';ctx.fillRect(28,fy+fh-65,390,38);
+   ctx.fillStyle='#fff';ctx.textAlign='left';ctx.font='bold 18px system-ui';ctx.fillText('THE CHESS PARADOX ACADEMY',42,fy+fh-40);
+   ctx.fillStyle='#d7a45b';ctx.font='15px system-ui';ctx.fillText('Learn • Think • Improve',28,1260);
+ }
+ function drawArrow(from,to,x0,y0,sq){
+   const pos=s=>{let f=files.indexOf(s[0]),r=8-Number(s[1]);if(flipped){f=7-f;r=7-r}return{x:x0+f*sq+sq/2,y:y0+r*sq+sq/2}};
+   const a=pos(from),b=pos(to),ang=Math.atan2(b.y-a.y,b.x-a.x),head=22;
+   ctx.strokeStyle='#22b85a';ctx.fillStyle='#22b85a';ctx.lineWidth=10;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+   ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(b.x-head*Math.cos(ang-.5),b.y-head*Math.sin(ang-.5));ctx.lineTo(b.x-head*Math.cos(ang+.5),b.y-head*Math.sin(ang+.5));ctx.closePath();ctx.fill();
+ }
+ function squareAt(clientX,clientY){
+   const rect=canvas.getBoundingClientRect(),x=(clientX-rect.left)*canvas.width/rect.width,y=(clientY-rect.top)*canvas.height/rect.height;
+   const x0=28,y0=100,size=664,sq=size/8;
+   if(x<x0||x>x0+size||y<y0||y>y0+size)return null;
+   let c=Math.floor((x-x0)/sq),r=Math.floor((y-y0)/sq);
+   if(flipped){c=7-c;r=7-r}
+   return {r,c,name:files[c]+(8-r)};
+ }
+ canvas.addEventListener('pointerdown',e=>{
+   const s=squareAt(e.clientX,e.clientY);if(!s||!chess)return;
+   if(arrowMode){if(!arrowStart){arrowStart=s.name;status.textContent='Now tap the arrow destination.'}else{arrows.push({from:arrowStart,to:s.name});arrowStart=null;status.textContent='Arrow added.'}draw();return}
+   if(!selected){if(chess.get(s.name)){selected={r:s.r,c:s.c};draw()}return}
+   const from=files[selected.c]+(8-selected.r);
+   try{
+     const move=chess.move({from,to:s.name,promotion:'q'});
+     if(move){lastMove={from:move.from,to:move.to};selected=null;status.textContent=`Move played: ${move.san}`;}
+     else if(chess.get(s.name)){selected={r:s.r,c:s.c}}
+     else selected=null;
+   }catch(err){selected=null}
+   draw();
+ });
+ cameraBtn.onclick=async()=>{
+   try{cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});video.srcObject=cameraStream;await video.play();cameraBtn.textContent='Camera on ✓';recordBtn.disabled=false;status.textContent='Camera ready. Enable microphone before recording for your voice.';draw()}
+   catch(e){status.textContent='Camera error: '+e.message+'. Open this page using HTTPS and allow camera permission.'}
+ };
+ micBtn.onclick=async()=>{
+   try{micStream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});micBtn.textContent='Microphone on ✓';status.textContent='Microphone ready.'}
+   catch(e){status.textContent='Microphone error: '+e.message+'. Check browser permission.'}
+ };
+ recordBtn.onclick=()=>{
+   try{
+     if(!canvas.captureStream||!window.MediaRecorder){status.textContent='This browser does not support canvas recording. Try an updated Chrome browser.';return}
+     const stream=canvas.captureStream(30);
+     if(micStream)micStream.getAudioTracks().forEach(t=>stream.addTrack(t));
+     chunks=[];let opts={};
+     if(MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus'))opts.mimeType='video/webm;codecs=vp9,opus';
+     else if(MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus'))opts.mimeType='video/webm;codecs=vp8,opus';
+     recorder=new MediaRecorder(stream,opts);
+     recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
+     recorder.onstop=()=>{
+       const blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+       a.href=url;a.download='chess-paradox-class.webm';document.body.appendChild(a);a.click();a.remove();
+       setTimeout(()=>URL.revokeObjectURL(url),60000);
+       status.textContent='Recording saved/download started. Check Downloads in your phone.';
+       recordBtn.disabled=false;stopBtn.disabled=true;
+     };
+     recorder.start(1000);recordBtn.disabled=true;stopBtn.disabled=false;status.textContent='Recording… Board, camera and microphone are being combined.';
+   }catch(e){status.textContent='Recording error: '+e.message}
+ };
+ stopBtn.onclick=()=>{if(recorder&&recorder.state!=='inactive')recorder.stop()};
+ document.getElementById('flipBtn').onclick=()=>{flipped=!flipped;selected=null;draw()};
+ document.getElementById('resetBtn').onclick=()=>{if(chess)chess.reset();selected=null;lastMove=null;arrows=[];draw();status.textContent='Board reset.'};
+ document.getElementById('undoBtn').onclick=()=>{if(chess){chess.undo();selected=null;lastMove=null;draw();status.textContent='Last move undone.'}};
+ document.getElementById('arrowBtn').onclick=e=>{arrowMode=!arrowMode;arrowStart=null;e.target.textContent='Arrow mode: '+(arrowMode?'on':'off');status.textContent=arrowMode?'Tap arrow start square, then destination.':'Move mode enabled.'};
+ if(!chess)status.textContent='Chess rules library did not load. Check your internet connection and reload.';
+ draw();setInterval(draw,100);
+})();
+</script>
+</body>
+</html>
